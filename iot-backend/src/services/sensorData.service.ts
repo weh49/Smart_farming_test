@@ -5,11 +5,14 @@ import type {
 } from '../schemas/sensorData.schema.js';
 import type { PaginatedResponse } from '../schemas/common.schema.js';
 
+// 最新数据缓存（性能优化：避免每次查询都打远程 DB）
+// 模块级共享：路由控制器与 MQTT 监听器持有的是不同 Service 实例，
+// 只有共享同一份缓存，任一实例写入后其余实例的缓存才能一起失效
+let latestCache: { data: unknown; timestamp: number } | null = null;
+const LATEST_CACHE_TTL_MS = 30_000; // 30 秒
+
 export class SensorDataService {
   private sensorDataRepository: SensorDataRepository;
-  // 最新数据缓存（性能优化：避免每次查询都打远程 DB）
-  private latestCache: { data: unknown; timestamp: number } | null = null;
-  private readonly LATEST_CACHE_TTL_MS = 30_000; // 30 秒
 
   constructor() {
     this.sensorDataRepository = new SensorDataRepository();
@@ -19,6 +22,8 @@ export class SensorDataService {
   async createSensorData(data: CreateSensorDataInput) {
     try {
       const result = await this.sensorDataRepository.create(data);
+      // 写入后失效最新数据缓存，避免 /latest 在 TTL 内返回旧记录（脏读）
+      latestCache = null;
       return {
         success: true,
         message: 'Sensor data created successfully',
@@ -39,13 +44,13 @@ export class SensorDataService {
       const now = Date.now();
       // 1. 缓存命中（30 秒内）→ 直接返回，不查 DB
       if (
-        this.latestCache &&
-        now - this.latestCache.timestamp < this.LATEST_CACHE_TTL_MS
+        latestCache &&
+        now - latestCache.timestamp < LATEST_CACHE_TTL_MS
       ) {
         return {
           success: true,
           message: 'Latest sensor data retrieved successfully (from cache)',
-          data: this.latestCache.data,
+          data: latestCache.data,
           cached: true,
         };
       }
@@ -62,7 +67,7 @@ export class SensorDataService {
       }
 
       // 3. 写入缓存
-      this.latestCache = { data, timestamp: now };
+      latestCache = { data, timestamp: now };
 
       return {
         success: true,
