@@ -1,0 +1,25 @@
+#ifndef RELAY_CONTROLLER_H
+#define RELAY_CONTROLLER_H
+
+#include <Arduino.h>
+
+class RelayController {
+private:
+    int pin;
+    bool isActive;
+    bool lastState;
+    const int SOIL_THRESHOLD = 10;       // 0-10% soil moisture triggers pump
+
+public:
+    RelayController(int relayPin);
+    void begin();
+    bool shouldActivate(int soilMoisture);  
+    void control(int soilMoisture, String& reason);  
+    void setRelayState(bool state);  
+    bool isRelayActive() const;
+    bool hasStateChanged();
+    void updateLastState();
+    void printDebugInfo(const String& reason) const;
+};
+
+#endif

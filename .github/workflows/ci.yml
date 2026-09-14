@@ -1,0 +1,90 @@
+name: CI - IoT API & MQTT Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # 被测系统的依赖：PostgreSQL（数据库）+ Mosquitto（MQTT Broker）
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+      mosquitto:
+        image: eclipse-mosquitto:2
+        ports:
+          - 1883:1883
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ---------- 被测系统：iot-backend (Node/TS + Prisma) ----------
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: iot-backend/package-lock.json
+
+      - name: Install backend dependencies
+        run: npm ci --prefix iot-backend
+
+      - name: Build backend
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/postgres
+        run: npm run build --prefix iot-backend
+
+      - name: Apply database migrations
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/postgres
+        run: |
+          cd iot-backend
+          npx prisma migrate deploy
+
+      - name: Start backend & MQTT worker
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/postgres
+          PORT: 3001
+          ENABLE_MQTT: 1
+          MQTT_HOST: localhost
+          MQTT_PORT: 1883
+        run: |
+          node iot-backend/dist/index.js &
+          node iot-backend/dist/mqtt-worker.js &
+          sleep 10
+          curl --retry 15 --retry-connrefused --retry-delay 2 -s -o /dev/null -w "backend http code: %{http_code}\n" http://localhost:3001/api/ || true
+
+      # ---------- 测试端：Python + pytest ----------
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: pip install -r test/requirements.txt
+
+      - name: Run tests
+        env:
+          API_BASE_URL: http://localhost:3001/api
+          MQTT_BROKER_HOST: localhost
+          MQTT_BROKER_PORT: 1883
+        run: pytest -v
