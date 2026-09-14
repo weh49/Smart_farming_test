@@ -10,7 +10,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
-    # 被测系统的依赖：PostgreSQL（数据库）+ Mosquitto（MQTT Broker）
+    # 被测系统的依赖：PostgreSQL（数据库）
+    # MQTT Broker 改为在步骤中手动启动（mosquitto 2.x 默认拒绝匿名连接，需挂载自定义配置）
     services:
       postgres:
         image: postgres:16
@@ -25,10 +26,6 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 5
-      mosquitto:
-        image: eclipse-mosquitto:2
-        ports:
-          - 1883:1883
 
     steps:
       - name: Checkout code
@@ -45,11 +42,11 @@ jobs:
       - name: Install backend dependencies
         run: npm ci --prefix iot-backend
 
-      - name: Build backend
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/postgres
-        run: npm run build --prefix iot-backend
+      - name: Start MQTT broker
+        run: |
+          docker run -d --name mqtt -p 1883:1883 \
+            -v "$PWD/.github/mosquitto.conf":/mosquitto/config/mosquitto.conf \
+            eclipse-mosquitto:2
 
       - name: Apply database migrations
         env:
@@ -59,7 +56,7 @@ jobs:
           cd iot-backend
           npx prisma migrate deploy
 
-      - name: Start backend & MQTT worker
+      - name: Start backend  # 以 tsx 直接运行 TS 源码（与本地 npm run dev 一致）
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
           DIRECT_URL: postgresql://postgres:postgres@localhost:5432/postgres
@@ -68,8 +65,8 @@ jobs:
           MQTT_HOST: localhost
           MQTT_PORT: 1883
         run: |
-          node iot-backend/dist/index.js &
-          node iot-backend/dist/mqtt-worker.js &
+          cd iot-backend
+          npx tsx src/index.ts &
           sleep 10
           curl --retry 15 --retry-connrefused --retry-delay 2 -s -o /dev/null -w "backend http code: %{http_code}\n" http://localhost:3001/api/ || true
 
