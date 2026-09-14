@@ -63,13 +63,15 @@ class TestMqttPublish:
         resp = api_client.post("/mqtt/publish", json_data={"topic": "sf/devices/relay/command","qos":"3"})
         assert resp.status_code == 400, f"MQTT publish failed: {resp.status_code}"
         
-    def test_mqtt_relayPersisted(self,api_client):
-        """正向: 继计继电器日志relayPersisted字段验证"""
+    def test_mqtt_relayPersisted(self,api_client,sensor_data_pool):
+        """正向: 继计继电器日志relayPersisted字段验证（显式关联一条已存在的传感器数据）"""
         current = api_client.get("/relay-log/status").json()["data"]["relayStatus"]
         target = not current
+        sensor_id = sensor_data_pool["ids"][0]
         resp = api_client.post("/mqtt/publish", 
-            json_data={"topic": "sf/devices/relay/command", "payload": {"status": target}}) 
-        assert resp.json()["relayPersisted"] == True, f"MQTT publish failed: {resp.json()['relayPersisted']}"
+            json_data={"topic": "sf/devices/relay/command",
+                       "payload": {"status": target, "sensorReadingId": sensor_id}}) 
+        assert resp.json()["relayPersisted"] == True, f"MQTT publish failed: {resp.json()}"
         
     
 # ============================================================
@@ -102,7 +104,7 @@ class TestMqttSensorPipeline:
         # 3. 轮询等待数据落库（用 is not None 判断，避免浮点精度问题导致死循环）
         for _ in range(20):
             resp = api_client.get("/sensor-data/latest")
-            data = resp.json().get("data",{})
+            data = resp.json().get("data") or {}
             if data.get("temperature") is not None and data.get("humidity") is not None:
                 break
             time.sleep(0.1)
@@ -123,13 +125,13 @@ class TestMqttSensorPipeline:
         """异常: 测试传感器数据管道, payload 不是 JSON 格式"""
         # 1. 发之前，记录最新一条的 id
         time.sleep(1.0)
-        before = api_client.get("/sensor-data/latest").json()["data"]["id"]
+        before = (api_client.get("/sensor-data/latest").json().get("data") or {}).get("id")
         rc,result = mqtt_client.publish("sensor", "plain text")
         # time.sleep(1.0)    简单异步等待，确保数据写入数据库，获取到最新的传感器数据
         result.wait_for_publish(timeout = 5)
         assert result.is_published(), f"MQTT publish failed: rc = {rc}"
         # 3. 发之后，再查最新 id
-        after = api_client.get("/sensor-data/latest").json()["data"]["id"]
+        after = (api_client.get("/sensor-data/latest").json().get("data") or {}).get("id")
         # 4. id 没变 = 非法消息确实被丢弃了
         assert before == after, f"非法消息不应被存储：before={before}, after={after}"
 
@@ -137,7 +139,7 @@ class TestMqttSensorPipeline:
         """异常: 测试传感器数据管道, payload 缺失关键字段"""
         # 1. 发之前，记录最新一条的 id
         time.sleep(1.0)
-        before = api_client.get("/sensor-data/latest").json()["data"]["id"]
+        before = (api_client.get("/sensor-data/latest").json().get("data") or {}).get("id")
         rc,result = mqtt_client.publish("sensor", json.dumps({
             "temperature": None, 
             "humidity": None,
@@ -148,20 +150,21 @@ class TestMqttSensorPipeline:
         result.wait_for_publish(timeout = 5)
         assert result.is_published(), f"MQTT publish failed: rc = {rc}"
         # 3. 发之后，再查最新 id
-        after = api_client.get("/sensor-data/latest").json()["data"]["id"]
+        after = (api_client.get("/sensor-data/latest").json().get("data") or {}).get("id")
         # 4. id 没变 = 非法消息确实被丢弃了
         assert before == after, f"非法消息不应被存储：before={before}, after={after}"
 
 
-    def test_MQTT_relay_log(self, mqtt_client, api_client):
-        """正向: 测试继电器日志管道"""
+    def test_MQTT_relay_log(self, mqtt_client, api_client, sensor_data_pool):
+        """正向: 测试继电器日志管道（关联一条真实存在的传感器数据，避免外键失败）"""
         # 1. 查当前状态，取反（避免状态冲突）
         current = api_client.get("/relay-log/status").json()["data"]["relayStatus"]
         target = not current
+        sensor_id = sensor_data_pool["ids"][0]
         # 2. 记录 before id
-        before = api_client.get("/relay-log/latest").json()["data"]["id"]
+        before = (api_client.get("/relay-log/latest").json().get("data") or {}).get("id")
 
-        payload = json.dumps({"relayStatus": target, "sensorReadingId": 1})
+        payload = json.dumps({"relayStatus": target, "sensorReadingId": sensor_id})
         rc, msg_info = mqtt_client.publish("relay", payload)
         msg_info.wait_for_publish(timeout=5)
         assert msg_info.is_published(), f"publish 失败: rc={rc}"
@@ -169,7 +172,7 @@ class TestMqttSensorPipeline:
         # 3. 轮询：等 id 变化（有新记录落库）
         for _ in range(20):
             resp = api_client.get("/relay-log/latest")
-            after_id = resp.json().get("data", {}).get("id")
+            after_id = (resp.json().get("data") or {}).get("id")
             if after_id != before:
                 break
             time.sleep(0.1)
@@ -179,14 +182,14 @@ class TestMqttSensorPipeline:
         # 4. 断言新记录（relayStatus 是布尔；sensorReadingId 是字符串）
         body = resp.json()
         assert body["data"]["relayStatus"] is target
-        assert body["data"]["sensorReadingId"] == "1"      # ← 字符串，BigInt
+        assert body["data"]["sensorReadingId"] == str(sensor_id)   # ← 字符串，BigInt
         assert body["data"]["createdAt"] is not None
 
     
     def test_MQTT_relay_log_missing_fields(self,mqtt_client,api_client):
         """异常: 测试继电器日志管道, 缺失状态字段，没有state/status"""
         # 1. 发之前，记录最新一条的 id
-        before = api_client.get("/relay-log/latest").json()["data"]["id"]
+        before = (api_client.get("/relay-log/latest").json().get("data") or {}).get("id")
         payload = json.dumps({
             # "state": "",
             "sensorReadingId": "1",
@@ -196,7 +199,7 @@ class TestMqttSensorPipeline:
         msg_info.wait_for_publish(timeout=5)
         assert msg_info.is_published(), f"publish 失败: rc={rc}"
          # 3. 发之后，再查最新 id
-        after = api_client.get("/relay-log/latest").json()["data"]["id"]
+        after = (api_client.get("/relay-log/latest").json().get("data") or {}).get("id")
         # 4. id 没变 = 非法消息确实被丢弃了
         assert before == after, f"非法消息不应被存储：before={before}, after={after}"
       

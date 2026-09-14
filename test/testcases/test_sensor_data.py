@@ -386,10 +386,10 @@ class TestGetLatestSensorData:
                     "latest 数据的 createdAt 应 >= 列表中所有记录"
 
     def test_get_latest_sensor_data_message(self, api_client, sensor_test_data):
-        """正向：成功消息内容正确"""
+        """正向：成功消息内容正确（命中 TTL 缓存时后端会附加 "(from cache)"）"""
         resp = api_client.get("/sensor-data/latest")
         assert resp.status_code == 200
-        assert resp.json()["message"] == "Latest sensor data retrieved successfully"
+        assert "Latest sensor data retrieved successfully" in resp.json()["message"]
 
 
 # ============================================================

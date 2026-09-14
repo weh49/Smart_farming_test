@@ -64,6 +64,10 @@ jobs:
           ENABLE_MQTT: 1
           MQTT_HOST: localhost
           MQTT_PORT: 1883
+          # 后端 assertEnv() 要求用户名/密码非空；PROTOCOL 不设会默认 mqtts(TLS)
+          MQTT_PROTOCOL: mqtt
+          MQTT_USERNAME: ci
+          MQTT_PASSWORD: ci
         run: |
           cd iot-backend
           npx tsx src/index.ts &
