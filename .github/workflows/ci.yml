@@ -88,4 +88,16 @@ jobs:
           API_BASE_URL: http://localhost:3001/api
           MQTT_BROKER_HOST: localhost
           MQTT_BROKER_PORT: 1883
-        run: pytest -v
+        run: |
+          set +e
+          pytest -v --tb=short 2>&1 | tee /tmp/pytest.log
+          rc=${PIPESTATUS[0]}
+          # 将失败用例以注解形式输出到 Actions 页面，便于快速定位
+          if [ "$rc" -ne 0 ]; then
+            echo "::group::失败用例明细"
+            grep -E "^(FAILED|ERROR) " /tmp/pytest.log | head -20 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            echo "::endgroup::"
+          fi
+          exit "$rc"
